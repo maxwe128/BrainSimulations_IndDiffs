@@ -1,0 +1,58 @@
+---
+title: "Dunedin2WaveSimulation"
+author: "Max Elliott"
+date: "5/18/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r Setup}
+library(tidyr)
+library(simstudy)
+```
+
+
+```{r Generate Data, echo=FALSE}
+##Define the "True" underlying longitudinal dataset for hippocampal volume that you will sample from with measurement error later on
+###Generate data with 3 time points of hipp vol measurement at at 45, 52 and 59
+###Mean and variance comes from https://doi.org/10.1016/j.nicl.2019.101904
+
+###Set up sampling parameters
+nSubs<-1000
+nTimepoints<-3
+brainVar_mean<-4000
+brainVar_sd<-420
+
+##Generate data in wide then melt later into long
+data<-tibble(
+  ID = rep(1:nSubs,each=nTimepoints),
+  Phase = rep(1:nTimepoints,nSubs),
+  BrainVar=
+)
+rnorm(1000,4000,420)
+
+tdef <- defData(varname = "Y0", dist = "normal", formula = 4000, variance = 420^2)
+tdef <- defData(tdef, varname = "decRate", formula = .01, variance = .000008)
+tdef <- defData(tdef, varname = "Y1", dist = "nonrandom", formula = "Y0*(1-decRate)^7")
+tdef <- defData(tdef, varname = "Y2", dist = "nonrandom", formula = "Y0*(1-decRate)^14")
+
+set.seed(483726)
+
+dtTrial <- genData(1000, tdef)
+dtTime <- addPeriods(dtTrial, nPeriods = 3, idvars = "id", timevars = c("Y0", "Y1",
+    "Y2"), timevarName = "Y")
+summary(dtTrial$decRate)
+dtTrial
+
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
