@@ -1,13 +1,9 @@
 ---
 title: "Dunedin2WaveSimulation"
-author: "Max Elliott and Annchen Knodt"
+author: "Annchen Knodt and Max Elliott"
 date: "5/18/2022"
 output: html_document
 ---
-
-```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
-```
 
 ## R Markdown
 
@@ -15,100 +11,152 @@ This is an R Markdown document. Markdown is a simple formatting syntax for autho
 
 When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
 
-```{r Setup}
+```{r Setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
 library(tidyr)
 library(simstudy)
+library(ggplot2)
 
 set.seed(483726)
+
+workdir <- "H:/Projects/Annchen/DBIS/Phase52/Simulations/"
 ```
 
 
 ```{r Generate True Data, echo=FALSE}
-## Define the "True" underlying longitudinal dataset for hippocampal volume that you will sample from with measurement error later on
+## STEP1: Define the "True" underlying longitudinal dataset for hippocampal volume that you will sample from with measurement error later on
 ### Generate data with 3 time points of hipp vol measurement at at 45, 52 and 59
 ### Mean and variance comes from https://doi.org/10.1016/j.nicl.2019.101904
 
 ### Set up sampling parameters
 nSubs <- 1000
 nTimepoints <- 3
+nRapidScan <- 5 # number of rapid scans collected. not fully generalized when calculating avg at end of loop simulating observed scores!!
 brainVar_mean <- 4000
 brainVar_sd <- 420
-decline_mean <- .01
-decline_sd <- .01
+decline_mean <- .001
+decline_sd <- .0005
+nSim <- 100
 
-# ##Generate data in wide then melt later into long
-# data <- tibble(
-#   ID = rep(1:nSubs, each=nTimepoints),
-#   Phase = rep(1:nTimepoints, nSubs),
-#   BrainVar = rnorm(nSubs, brainVar_mean, brainVar_sd)
-# )
+results <- data.frame(iter=integer(), errSD_long=double(), errSD_short=double(), 
+                      type=character(), reliability=double(), accuracy=double(), dec_accuracy=double(), pval=double())
 
-## use simstudy package to define and sample simulated data
-tdef <- defData(varname = "Y0", dist = "normal", formula = brainVar_mean, variance = brainVar_sd^2)
-tdef <- defData(tdef, varname = "decRate", formula = decline_mean, variance = decline_sd^2)
-tdef <- defData(tdef, varname = "Y1", dist = "nonrandom", formula = "Y0*(1-decRate)^7")
-tdef <- defData(tdef, varname = "Y2", dist = "nonrandom", formula = "Y0*(1-decRate)^14")
+for(s in seq(1,nSim)){
 
-### create table with a column for each time point (Y), i.e. wide
-dtTrial <- genData(nSubs, tdef)
-### create table with a row for each time point (Y), i.e. long
-dtTime <- addPeriods(dtTrial, nPeriods = 3, idvars = "id", timevars = c("Y0", "Y1", "Y2"), timevarName = "Y")
-### look at data
-summary(dtTrial$decRate)
-dtTrial
+  ## use simstudy package to define and sample simulated data
+  tdef <- defData(varname = "time0_true", dist = "normal", formula = brainVar_mean, variance = brainVar_sd^2)
+  tdef <- defData(tdef, varname = "decRate", formula = decline_mean, variance = decline_sd^2)
+  tdef <- defData(tdef, varname = "time1_true", dist = "nonrandom", formula = "time0_true*(1-decRate)^7")
+  tdef <- defData(tdef, varname = "time2_true", dist = "nonrandom", formula = "time0_true*(1-decRate)^14")
+  
+  ### create table with a column for each time point, i.e. wide
+  dtTrial <- genData(nSubs, tdef)
+  ### create table with a row for each time point, i.e. long
+  # dtTime <- addPeriods(dtTrial, nPeriods = 3, idvars = "id", timevars = c("time0_true", "time1_true", "time2_true"), timevarName = "time")
+  # ### look at data
+  # summary(dtTrial$decRate)
+  # dtTrial
+  
+  ## STEP 2: sample from "true" longitudinal dataset, with measurement error
+  ### modeling measurements collected with standard T1 scan (long scan), and rapid T1 (short scan)
+  ### ** for now, just picking numbers for error sds, assuming rapid is higher. can explore parameter space and/or find data to refine estimates
+  ### ** for now, assuming that errors are independent!! especially relevant for repeated short scans
+
+  ### Set up sampling parameters
+  errorSDs_longScan <- c(50, 100, 150) # routine T1 error sd (using mean 0)
+  errorSDs_shortScan <- seq(50, 500, 50) # rapid T1 error sd (using mean 0)
+  
+  for(errSD_long in errorSDs_longScan){
+    for(errSD_short in errorSDs_shortScan){
+
+      ## simulate gaussian error and add to true scores
+      ### (not sure why i have to use "get" here...)
+      ### (might not be necessary to store errors but do that for now)
+      for(i in c(0,1,2)){
+        # long scan
+        dtTrial[, paste0("time", i, "_err_long")] <- rnorm(nSubs, 0, errSD_long) # draw and store error
+        dtTrial[, paste0("time", i, "_obs_long")] <- dtTrial[, get(paste0("time", i, "_err_long"))] + dtTrial[, get(paste0("time", i,"_true"))] # add error to true to get Observed ("obs") 
+        ## also simulate a "retest" for the routine long scan so we can calculate reliability
+        dtTrial[, paste0("time", i, "_err_long.retest")] <- rnorm(nSubs, 0, errSD_long) 
+        dtTrial[, paste0("time", i, "_obs_long.retest")] <- dtTrial[, get(paste0("time", i, "_err_long.retest"))] + dtTrial[, get(paste0("time", i,"_true"))] 
+        # short/rapid scans
+        for(j in seq(1,nRapidScan)){
+          dtTrial[, paste0("time", i, "_err_short", j)] <- rnorm(nSubs, 0, errSD_short) 
+          dtTrial[, paste0("time", i, "_obs_short", j)] <- dtTrial[, get(paste0("time", i, "_err_short", j))] + dtTrial[, get(paste0("time", i,"_true"))] 
+          ## short "retest" so we can get reliability of avg short scans
+          dtTrial[, paste0("time", i, "_err_short.retest", j)] <- rnorm(nSubs, 0, errSD_short) 
+          dtTrial[, paste0("time", i, "_obs_short.retest", j)] <- dtTrial[, get(paste0("time", i, "_err_short.retest", j))] + dtTrial[, get(paste0("time", i,"_true"))] 
+        }
+        ## now avg short scans
+        ### (there has to be some way to do this dynamically but couldn't get first try to work! dtTrial[, get(paste0("O",i,"_S",seq(1,nRapidScan)))])
+        dtTrial[, paste0("time", i, "_obs_short.avg")] <- rowMeans(cbind(dtTrial[, get(paste0("time", i, "_obs_short1"))], 
+                                                                         dtTrial[, get(paste0("time", i, "_obs_short2"))], 
+                                                                         dtTrial[, get(paste0("time", i, "_obs_short3"))], 
+                                                                         dtTrial[, get(paste0("time", i, "_obs_short4"))], 
+                                                                         dtTrial[, get(paste0("time", i, "_obs_short5"))]))
+        dtTrial[, paste0("time", i, "_obs_short.avg.retest")] <- rowMeans(cbind(dtTrial[, get(paste0("time", i, "_obs_short.retest1"))], 
+                                                                                dtTrial[, get(paste0("time", i, "_obs_short.retest2"))], 
+                                                                                dtTrial[, get(paste0("time", i, "_obs_short.retest3"))], 
+                                                                                dtTrial[, get(paste0("time", i, "_obs_short.retest4"))], 
+                                                                                dtTrial[, get(paste0("time", i, "_obs_short.retest5"))]))
+      }
+      ### difference (/decline) - *** just doing 0 to 1 for now!! ***
+      dtTrial$time01_true_dec          <- dtTrial$time1_true          - dtTrial$time0_true
+      dtTrial$time01_obs_dec_long      <- dtTrial$time1_obs_long      - dtTrial$time0_obs_long
+      dtTrial$time01_obs_dec_short.avg <- dtTrial$time1_obs_short.avg - dtTrial$time0_obs_short.avg
+      dtTrial$time01_obs_dec_short1    <- dtTrial$time1_obs_short1    - dtTrial$time0_obs_short1
+      
+      ## look at reliability, lazy right now with cor but ***could update to ICC; could add time1 and time2 but shoudl be same***
+      rel_long <- cor(dtTrial[, c("time0_obs_long", "time0_obs_long.retest")])[1,2]
+      rel_short.avg <- cor(dtTrial[, c("time0_obs_short.avg", "time0_obs_short.avg.retest")])[1,2]
+      x <- cor(dtTrial[, c("time0_obs_short1", "time0_obs_short2", "time0_obs_short3", "time0_obs_short4", "time0_obs_short5" )])
+      rel.avg_short <- mean(x[lower.tri(x)]) # average of single short scan reliabilities
+      ## cor with true score
+      acc_long <- cor(dtTrial[, c("time0_obs_long", "time0_true")])[1,2]
+      acc_short1 <- cor(dtTrial[, c("time0_obs_short1", "time0_true")])[1,2]
+      acc_short.avg <- cor(dtTrial[, c("time0_obs_short.avg", "time0_true")])[1,2]
+      acc_dec_long <- cor(dtTrial[, c("time01_true_dec", "time01_obs_dec_long")])[1,2]
+      acc_dec_short1 <- cor(dtTrial[, c("time01_true_dec", "time01_obs_dec_short1")])[1,2]
+      acc_dec_short.avg <- cor(dtTrial[, c("time01_true_dec", "time01_obs_dec_short.avg")])[1,2]
+      pval_long <- t.test(dtTrial$time01_obs_dec_long)$p.value
+      pval_short.avg <- t.test(dtTrial$time01_obs_dec_long)$p.value
+      pval_short1 <- t.test(dtTrial$time01_obs_dec_long)$p.value
+      
+      results <- rbind(results, data.frame(iter=s, errSD_long=errSD_long, errSD_short=errSD_short, 
+                                           type="long", reliability=rel_long, accuracy=acc_long, accuracy_dec=acc_dec_long, pval=pval_long))
+      results <- rbind(results, data.frame(iter=s, errSD_long=errSD_long, errSD_short=errSD_short, 
+                                           type="short1", reliability=rel.avg_short, accuracy=acc_short1, accuracy_dec=acc_dec_short1, pval=pval_short1)) 
+      results <- rbind(results, data.frame(iter=s, errSD_long=errSD_long, errSD_short=errSD_short, 
+                                           type="short.avg", reliability=rel_short.avg, accuracy=acc_short.avg, accuracy_dec=acc_dec_short.avg, pval=pval_short.avg))                                 
+
+    } # end loop thru short scan SDs
+  } # end loop thru long scan SDs
+  
+} # end loop through nSim
 
 ```
 
-```{r Generate Observed Data, echo=FALSE}
-## sample from "true" longitudinal dataset, with measurement error
-### modeling measurements collected with standard T1 scan (long scan), and rapid T1 (short scan)
-### ** for now, just picking numbers for error sds, assuming rapid is higher. can explore parameter space and/or find data to refine estimates
-### ** for now, assuming that errors are independent!! especially relevant for repeated short scans
-### NEXT DO: plot results in a clean way.
+```{r plot}
 
-### Set up sampling parameters
-errorSD_longScan <- 100 # routine T1 error sd (using mean 0)
-errorSD_shortScan <- 200 # rapid T1 error sd (using mean 0)
-nRapidScan <- 5 # number of rapid scans collected. not fully generalized when calculating avg at end of loop!!
 
-## simulate gaussian error and add to true scores
-### (not sure why i have to use "get" here...)
-### (might not be necessary to store errors but do that for now)
-for(i in c(0,1,2)){
-  # long scan
-  dtTrial[, paste0("E", i, "_L")] <- rnorm(nSubs, 0, errorSD_longScan) # draw and store error
-  dtTrial[, paste0("O", i, "_L")] <- dtTrial[, get(paste0("E", i, "_L"))] + dtTrial[, get(paste0("Y", i))] # add error to true to get Observed ("O") 
-  ## also simulate a "retest" for the routine long scan so we can calculate reliability
-  dtTrial[, paste0("E", i, "_L.retest")] <- rnorm(nSubs, 0, errorSD_longScan) # draw and store error
-  dtTrial[, paste0("O", i, "_L.retest")] <- dtTrial[, get(paste0("E", i, "_L.retest"))] + dtTrial[, get(paste0("Y", i))] # add error to true to get Observed ("O")   
-  # short/rapid scans
-  for(j in seq(1,nRapidScan)){
-    dtTrial[, paste0("E", i, "_S", j)] <- rnorm(nSubs, 0, errorSD_shortScan) # draw and store error
-    dtTrial[, paste0("O", i, "_S", j)] <- dtTrial[, get(paste0("E", i, "_S", j))] + dtTrial[, get(paste0("Y", i))] # add error to true to get jth Observed ("O")
-  }
-  ## now avg short scans
-  ### (there has to be some way to do this dynamically but couldn't get first try to work! dtTrial[, get(paste0("O",i,"_S",seq(1,nRapidScan)))])
-  dtTrial[, paste0("O", i, "_S.avg")] <- rowMeans(cbind(dtTrial[, get(paste0("O", i, "_S1"))], dtTrial[, get(paste0("O", i, "_S2"))], 
-                                                  dtTrial[, get(paste0("O", i, "_S3"))], dtTrial[, get(paste0("O", i, "_S4"))], dtTrial[, get(paste0("O", i, "_S5"))]))
-}
+png(paste0(workdir,"simulations_reliability.png"),height=4,width=7,res=300,units="in")
+  ggplot(results, aes(x=errSD_short, y=reliability, color=type)) + geom_point(alpha=.3) + facet_grid(cols=vars(errSD_long))
+dev.off()
+png(paste0(workdir,"simulations_accuracy.png"),height=4,width=7,res=300,units="in")
+  ggplot(results, aes(x=errSD_short, y=accuracy, color=type)) + geom_point(alpha=.3) + facet_grid(cols=vars(errSD_long))
+dev.off()
+png(paste0(workdir,"simulations_accuracy_dec.png"),height=4,width=7,res=300,units="in")
+  ggplot(results, aes(x=errSD_short, y=accuracy_dec, color=type)) + geom_point(alpha=.3) + facet_grid(cols=vars(errSD_long))
+dev.off()
 
-## look at reliability, lazy right now with cor but could update to ICC
-cor(dtTrial[, c("O0_L", "O0_L.retest")])
-cor(dtTrial[, c("O1_L", "O1_L.retest")])
-cor(dtTrial[, c("O2_L", "O2_L.retest")])
-cor(dtTrial[, c("O0_S1", "O0_S2", "O0_S3", "O0_S4", "O0_S5" )])
-cor(dtTrial[, c("O1_S1", "O1_S2", "O1_S3", "O1_S4", "O1_S5" )])
-cor(dtTrial[, c("O2_S1", "O2_S2", "O2_S3", "O2_S4", "O2_S5" )])
-## cor with true score
-cor(dtTrial[, c("O0_L", "Y0")])
-cor(dtTrial[, c("O1_L", "Y1")])
-cor(dtTrial[, c("O2_L", "Y2")])
-cor(dtTrial[, c("O0_S1", "Y0")])
-cor(dtTrial[, c("O1_S1", "Y1")])
-cor(dtTrial[, c("O2_S1", "Y2")])
-cor(dtTrial[, c("O0_S.avg", "Y0")])
-cor(dtTrial[, c("O1_S.avg", "Y1")])
-cor(dtTrial[, c("O2_S.avg", "Y2")])
+# use aggregate to count number of sims where decline was detected / significant
+# (aggregate automatically names column x, coudl figure out how to change)
+p_thr <- .05
+results_Nsig <- aggregate(results[, "pval"], by=results[, c("errSD_long","errSD_short","type")], function(x) sum(x<p_thr))
+png(paste0(workdir,"simulations_Nsig.png"),height=4,width=7,res=300,units="in")
+  ggplot(results_Nsig, aes(x=errSD_short, y=x, color=type)) + geom_point(alpha=.3) + facet_grid(cols=vars(errSD_long))
+dev.off()
 ```
 
 Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
